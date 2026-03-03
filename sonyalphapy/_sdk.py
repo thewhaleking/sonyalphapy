@@ -12,6 +12,7 @@ import ctypes.util
 import os
 import struct
 import sys
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Locate and load the dylib
@@ -212,34 +213,40 @@ def _bind_functions(lib: ctypes.CDLL) -> None:
 # All symbols confirmed present via: nm -gU libCr_Core.dylib
 # ---------------------------------------------------------------------------
 
+
+def _unbound(*_args: Any) -> Any:
+    """Placeholder for C++ method pointers before _bind_cpp_methods() runs."""
+    raise RuntimeError("SDK not loaded; call initialize() first")
+
+
 # CrDeviceProperty method pointers (populated by _bind_cpp_methods)
-_dp_ctor = None
-_dp_dtor = None
-_dp_GetCode = None
-_dp_SetCode = None
-_dp_GetCurrentValue = None
-_dp_SetCurrentValue = None
-_dp_GetValueType = None
-_dp_SetValueType = None
-_dp_IsGetEnable = None
-_dp_IsSetEnable = None
-_dp_GetValues = None
-_dp_GetValueSize = None
+_dp_ctor: Callable[..., Any] = _unbound
+_dp_dtor: Callable[..., Any] = _unbound
+_dp_GetCode: Callable[..., Any] = _unbound
+_dp_SetCode: Callable[..., Any] = _unbound
+_dp_GetCurrentValue: Callable[..., Any] = _unbound
+_dp_SetCurrentValue: Callable[..., Any] = _unbound
+_dp_GetValueType: Callable[..., Any] = _unbound
+_dp_SetValueType: Callable[..., Any] = _unbound
+_dp_IsGetEnable: Callable[..., Any] = _unbound
+_dp_IsSetEnable: Callable[..., Any] = _unbound
+_dp_GetValues: Callable[..., Any] = _unbound
+_dp_GetValueSize: Callable[..., Any] = _unbound
 
 # CrImageDataBlock method pointers
-_ib_ctor = None
-_ib_dtor = None
-_ib_SetSize = None
-_ib_GetSize = None
-_ib_SetData = None
-_ib_GetImageData = None
-_ib_GetImageSize = None
-_ib_GetFrameNo = None
+_ib_ctor: Callable[..., Any] = _unbound
+_ib_dtor: Callable[..., Any] = _unbound
+_ib_SetSize: Callable[..., Any] = _unbound
+_ib_GetSize: Callable[..., Any] = _unbound
+_ib_SetData: Callable[..., Any] = _unbound
+_ib_GetImageData: Callable[..., Any] = _unbound
+_ib_GetImageSize: Callable[..., Any] = _unbound
+_ib_GetFrameNo: Callable[..., Any] = _unbound
 
 # CrImageInfo method pointers
-_ii_ctor = None
-_ii_dtor = None
-_ii_GetBufferSize = None
+_ii_ctor: Callable[..., Any] = _unbound
+_ii_dtor: Callable[..., Any] = _unbound
+_ii_GetBufferSize: Callable[..., Any] = _unbound
 
 
 def _bind_cpp_methods(lib: ctypes.CDLL) -> None:
