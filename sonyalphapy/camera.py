@@ -296,7 +296,9 @@ class Camera:
         if not _wait_for_event_pumping_runloop(connected_event, timeout):
             raise SonyConnectionError(f"Camera did not respond within {timeout}s")
         if not wrapper.connection_succeeded:
-            raise SonyConnectionError("Camera rejected the connection (OnDisconnected received)")
+            raise SonyConnectionError(
+                "Camera rejected the connection (OnDisconnected received)"
+            )
         self._connected = True
 
     def disconnect(self) -> None:
