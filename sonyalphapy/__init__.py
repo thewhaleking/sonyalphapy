@@ -18,8 +18,8 @@ Example usage::
     sony.shutdown()
 
 Note:
-    The underlying SDK library (libCr_Core.dylib) is x86_64 only.
-    On Apple Silicon (M1/M2/M3/M4) run Python under Rosetta 2.
+    All bundled SDK dylibs are universal binaries (x86_64 + arm64) and run
+    natively on both Intel and Apple Silicon Macs.
 """
 
 from .camera import Camera, initialize, shutdown, sdk_version, enumerate_cameras
