@@ -1,6 +1,12 @@
 # sonyalphapy
 High-level Python API for Sony Alpha cameras via CrSDK v1.
 
+### Installation
+You can install via pip with:
+```
+pip install sonyalphapy
+```
+
 ### Typical usage:
 
 1. Connect camera via USB
