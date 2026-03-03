@@ -24,12 +24,57 @@ _ADAPTER_DIR = os.path.join(_SDK_DIR, "CrAdapter")
 _lib: ctypes.CDLL | None = None
 
 
+def _macos_symlink_adapters() -> None:
+    """Create adapter symlinks where the Sony SDK expects them on macOS.
+
+    The SDK uses ``NSBundle mainBundle.bundlePath`` + ``/Contents/Frameworks/CrAdapter/``
+    to locate its adapter dylibs.  For a command-line Python process that path
+    points into the Python.app bundle, not our SDK directory.  We create
+    symlinks there once so the SDK can find the adapters.
+    """
+    try:
+        objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.sel_registerName.restype = ctypes.c_void_p
+
+        def _msg(obj, sel, restype=ctypes.c_void_p):
+            fn = objc.objc_msgSend
+            fn.restype = restype
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            return fn(obj, objc.sel_registerName(sel))
+
+        ns_bundle = objc.objc_getClass(b"NSBundle")
+        bundle = _msg(ns_bundle, b"mainBundle")
+        path_obj = _msg(bundle, b"bundlePath")
+        bundle_bytes = _msg(path_obj, b"UTF8String", ctypes.c_char_p)
+        bundle_path = bundle_bytes.decode("utf-8")
+
+        adapter_dst = os.path.join(bundle_path, "Contents", "Frameworks", "CrAdapter")
+        os.makedirs(adapter_dst, exist_ok=True)
+
+        for name in (
+            "libusb-1.0.0.dylib",
+            "libssh2.dylib",
+            "libCr_PTP_USB.dylib",
+            "libCr_PTP_IP.dylib",
+        ):
+            src = os.path.join(_ADAPTER_DIR, name)
+            dst = os.path.join(adapter_dst, name)
+            if os.path.exists(src) and not os.path.lexists(dst):
+                os.symlink(src, dst)
+    except Exception:
+        pass  # Best-effort; SDK will report CrError_Adaptor_Create if it still can't find them.
+
+
 def _load_lib() -> ctypes.CDLL:
     global _lib
     if _lib is not None:
         return _lib
 
-    # Adapter dylibs must be loaded first so the core can resolve symbols.
+    if sys.platform == "darwin":
+        _macos_symlink_adapters()
+
+    # Preload adapter dylibs so the core can resolve symbols.
     for name in (
         "libusb-1.0.0.dylib",
         "libssh2.dylib",

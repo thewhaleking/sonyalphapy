@@ -73,6 +73,10 @@ class EnumCameraInfo:
         for i in range(self.get_count()):
             yield self.get_camera_object_info(i)
 
+    def __del__(self):
+        if self._ptr:
+            self.release()
+
     def __enter__(self):
         return self
 

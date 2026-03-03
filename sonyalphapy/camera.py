@@ -103,10 +103,18 @@ def enumerate_cameras(timeout_sec: int = 3) -> list["Camera"]:
         return []
 
     cameras = []
-    with EnumCameraInfo(enum_ptr.value) as enum_info:
+    # Do NOT release enum_info here — ICrCameraObjectInfo* pointers returned by
+    # GetCameraObjectInfo() are internal to the enum and become dangling once the
+    # enum is released.  Each Camera holds a reference to keep the enum alive
+    # until Connect() completes, after which it drops it.
+    enum_info = EnumCameraInfo(enum_ptr.value)
+    try:
         for i in range(enum_info.get_count()):
             info = enum_info.get_camera_object_info(i)
-            cameras.append(Camera(info, index=i))
+            cameras.append(Camera(info, index=i, _enum_ref=enum_info))
+    except Exception:
+        enum_info.release()
+        raise
     return cameras
 
 
@@ -121,12 +129,19 @@ class Camera:
     Obtain instances from :func:`enumerate_cameras`.
     """
 
-    def __init__(self, info: CameraObjectInfo, index: int = 0):
+    def __init__(self, info: CameraObjectInfo, index: int = 0, _enum_ref=None):
         self._info = info
         self._index = index
         self._handle = ctypes.c_int64(0)
         self._callback: DeviceCallback | None = None
         self._connected = False
+        # Keep the ICrEnumCameraObjectInfo alive until connect() — its raw pointer
+        # owns the ICrCameraObjectInfo* we hold in self._info.
+        self._enum_ref = _enum_ref
+        # Cache strings now while the vtable pointer is guaranteed valid.
+        self._model = info.model
+        self._name = info.name
+        self._connection_type = info.connection_type_name
 
     # ------------------------------------------------------------------
     # Connection
@@ -168,6 +183,8 @@ class Camera:
         )
         check_error(err, "Connect")
         self._connected = True
+        # ICrCameraObjectInfo* is no longer needed after Connect(); release the enum.
+        self._enum_ref = None
 
     def disconnect(self) -> None:
         """Disconnect from the camera."""
@@ -196,15 +213,15 @@ class Camera:
 
     @property
     def model(self) -> str:
-        return self._info.model
+        return self._model
 
     @property
     def name(self) -> str:
-        return self._info.name
+        return self._name
 
     @property
     def connection_type(self) -> str:
-        return self._info.connection_type_name
+        return self._connection_type
 
     @property
     def index(self) -> int:
