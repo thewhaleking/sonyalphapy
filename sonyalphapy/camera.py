@@ -172,13 +172,16 @@ class _ForwardingCallback(DeviceCallback):
     def __init__(self, event: threading.Event, inner: DeviceCallback | None = None):
         self._event = event
         self._inner = inner
+        self.connection_succeeded = False
 
     def on_connected(self, version: int) -> None:
+        self.connection_succeeded = True
         self._event.set()
         if self._inner:
             self._inner.on_connected(version)
 
     def on_disconnected(self, error: int) -> None:
+        self.connection_succeeded = False
         self._event.set()  # unblock connect() if camera rejects
         if self._inner:
             self._inner.on_disconnected(error)
@@ -292,6 +295,8 @@ class Camera:
 
         if not _wait_for_event_pumping_runloop(connected_event, timeout):
             raise SonyConnectionError(f"Camera did not respond within {timeout}s")
+        if not wrapper.connection_succeeded:
+            raise SonyConnectionError("Camera rejected the connection (OnDisconnected received)")
         self._connected = True
 
     def disconnect(self) -> None:
