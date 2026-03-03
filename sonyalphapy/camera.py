@@ -16,6 +16,9 @@ Typical usage::
 
 import ctypes
 import struct
+import sys
+import threading
+import time
 
 from ._sdk import (
     get_lib,
@@ -37,7 +40,7 @@ from ._sdk import (
 )
 from ._vcall import EnumCameraInfo, CameraObjectInfo
 from ._callback import DeviceCallback
-from .errors import check_error
+from .errors import check_error, SonyConnectionError
 from .enums import CommandId, CommandParam, DataType, SdkControlMode, ReconnectingSet
 
 
@@ -119,6 +122,103 @@ def enumerate_cameras(timeout_sec: int = 3) -> list["Camera"]:
 
 
 # ---------------------------------------------------------------------------
+# macOS run-loop helper
+# ---------------------------------------------------------------------------
+
+
+def _wait_for_event_pumping_runloop(event: threading.Event, timeout: float) -> bool:
+    """Wait for *event* while keeping the CoreFoundation run loop alive.
+
+    On macOS the Sony SDK may dispatch ``OnConnected`` through GCD's main
+    queue.  GCD main-queue blocks only execute when the main thread's CF run
+    loop is spinning.  A plain ``threading.Event.wait()`` blocks the main
+    thread without pumping the run loop, so the callback never fires.
+
+    We work around this by repeatedly calling ``CFRunLoopRunInMode`` for short
+    intervals (50 ms), checking the event between each call.
+    """
+    if sys.platform != "darwin":
+        return event.wait(timeout=timeout)
+    try:
+        CF = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+        CF.CFRunLoopRunInMode.restype = ctypes.c_int32
+        CF.CFRunLoopRunInMode.argtypes = [
+            ctypes.c_void_p,  # mode (CFStringRef)
+            ctypes.c_double,  # seconds
+            ctypes.c_bool,  # returnAfterSourceHandled
+        ]
+        mode = ctypes.c_void_p.in_dll(CF, "kCFRunLoopDefaultMode")
+        deadline = time.monotonic() + timeout
+        while not event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            CF.CFRunLoopRunInMode(mode, min(0.05, remaining), True)
+        return True
+    except Exception:
+        return event.wait(timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Internal callback wrapper used by Camera.connect()
+# ---------------------------------------------------------------------------
+
+
+class _ForwardingCallback(DeviceCallback):
+    """Wraps a user DeviceCallback, signals a threading.Event on OnConnected."""
+
+    def __init__(self, event: threading.Event, inner: DeviceCallback | None = None):
+        self._event = event
+        self._inner = inner
+
+    def on_connected(self, version: int) -> None:
+        self._event.set()
+        if self._inner:
+            self._inner.on_connected(version)
+
+    def on_disconnected(self, error: int) -> None:
+        self._event.set()  # unblock connect() if camera rejects
+        if self._inner:
+            self._inner.on_disconnected(error)
+
+    def on_property_changed(self) -> None:
+        if self._inner:
+            self._inner.on_property_changed()
+
+    def on_property_changed_codes(self, codes: list[int]) -> None:
+        if self._inner:
+            self._inner.on_property_changed_codes(codes)
+
+    def on_lv_property_changed(self) -> None:
+        if self._inner:
+            self._inner.on_lv_property_changed()
+
+    def on_lv_property_changed_codes(self, codes: list[int]) -> None:
+        if self._inner:
+            self._inner.on_lv_property_changed_codes(codes)
+
+    def on_complete_download(self, filename: str, file_type: int) -> None:
+        if self._inner:
+            self._inner.on_complete_download(filename, file_type)
+
+    def on_notify_contents_transfer(
+        self, notify: int, handle: int, filename: str
+    ) -> None:
+        if self._inner:
+            self._inner.on_notify_contents_transfer(notify, handle, filename)
+
+    def on_warning(self, warning: int) -> None:
+        if self._inner:
+            self._inner.on_warning(warning)
+
+    def on_error(self, error: int) -> None:
+        if self._inner:
+            self._inner.on_error(error)
+
+
+# ---------------------------------------------------------------------------
 # Camera class
 # ---------------------------------------------------------------------------
 
@@ -152,27 +252,32 @@ class Camera:
         callback: DeviceCallback | None = None,
         mode: SdkControlMode = SdkControlMode.Remote,
         reconnect: ReconnectingSet = ReconnectingSet.On,
+        timeout: float = 10.0,
     ) -> None:
-        """Connect to the camera.
+        """Connect to the camera and block until the connection is established.
+
+        The Sony SDK's ``Connect()`` is asynchronous — it returns immediately
+        and fires ``OnConnected`` when the camera is actually ready to receive
+        commands.  This method waits for that callback before returning.
 
         Args:
-            callback: Optional :class:`DeviceCallback` subclass instance for
-                      receiving camera events.  Keep the object alive for the
-                      duration of the connection.
+            callback: Optional :class:`DeviceCallback` subclass for camera events.
+                      Keep the object alive for the duration of the connection.
             mode: SDK control mode (Remote or ContentsTransfer).
             reconnect: Whether the SDK should auto-reconnect on link loss.
+            timeout: Seconds to wait for ``OnConnected`` (default 10).
 
         Raises:
-            SonyConnectionError: if the connection fails.
+            SonyConnectionError: if the connection fails or times out.
         """
-        if callback is None:
-            callback = DeviceCallback()
-        self._callback = callback
+        connected_event = threading.Event()
+        wrapper = _ForwardingCallback(connected_event, callback)
+        self._callback = wrapper  # keep alive; SDK holds raw pointer to it
 
         lib = get_lib()
         err = lib.Connect(
             self._info.raw_ptr,
-            callback._c_ptr(),
+            wrapper._c_ptr(),
             ctypes.byref(self._handle),
             int(mode),
             int(reconnect),
@@ -182,9 +287,12 @@ class Camera:
             0,  # fingerprintSize
         )
         check_error(err, "Connect")
-        self._connected = True
-        # ICrCameraObjectInfo* is no longer needed after Connect(); release the enum.
+        # ICrCameraObjectInfo* is no longer needed; release the enum before waiting.
         self._enum_ref = None
+
+        if not _wait_for_event_pumping_runloop(connected_event, timeout):
+            raise SonyConnectionError(f"Camera did not respond within {timeout}s")
+        self._connected = True
 
     def disconnect(self) -> None:
         """Disconnect from the camera."""
@@ -350,25 +458,18 @@ class Camera:
     # ------------------------------------------------------------------
 
     def capture(self) -> None:
-        """Trigger a still image capture (S1 + Release)."""
-        lib = get_lib()
-        # Press shutter (Down)
-        err = lib.SendCommand(
-            self._handle,
-            int(CommandId.S1andRelease),
-            int(CommandParam.Down),
-        )
-        check_error(err, "SendCommand(S1andRelease Down)")
-        # Release shutter (Up)
-        err = lib.SendCommand(
-            self._handle,
-            int(CommandId.S1andRelease),
-            int(CommandParam.Up),
-        )
-        check_error(err, "SendCommand(S1andRelease Up)")
+        """Release the shutter.
 
-    def capture_af(self) -> None:
-        """Trigger capture using autofocus + shutter (Release command)."""
+        Briefly asserts S1 (half-press) to arm the shutter before firing.
+        The Release command alone is ignored by the camera without a prior S1.
+        Use ``capture_af()`` if you need AF to lock first (adds a 500 ms S1 hold).
+        """
+        from .enums import PropertyCode, LockIndicator
+
+        # Brief S1 half-press to arm the shutter mechanism
+        self.set_property(PropertyCode.S1, int(LockIndicator.Locked))
+        time.sleep(0.1)
+
         lib = get_lib()
         err = lib.SendCommand(
             self._handle,
@@ -376,12 +477,47 @@ class Camera:
             int(CommandParam.Down),
         )
         check_error(err, "SendCommand(Release Down)")
+        time.sleep(0.035)
         err = lib.SendCommand(
             self._handle,
             int(CommandId.Release),
             int(CommandParam.Up),
         )
         check_error(err, "SendCommand(Release Up)")
+        time.sleep(1.0)  # wait for camera to write the image to card
+
+        self.set_property(PropertyCode.S1, int(LockIndicator.Unlocked))
+
+    def capture_af(self) -> None:
+        """Half-press to autofocus, then release the shutter.
+
+        Camera must be in an AF focus mode.
+        Matches Sony's sample ``af_shutter()`` exactly.
+        """
+        from .enums import PropertyCode, LockIndicator
+
+        # S1 half-press — lock focus
+        self.set_property(PropertyCode.S1, int(LockIndicator.Locked))
+        time.sleep(0.5)  # wait for AF to settle
+
+        lib = get_lib()
+        err = lib.SendCommand(
+            self._handle,
+            int(CommandId.Release),
+            int(CommandParam.Down),
+        )
+        check_error(err, "SendCommand(Release Down)")
+        time.sleep(0.035)
+        err = lib.SendCommand(
+            self._handle,
+            int(CommandId.Release),
+            int(CommandParam.Up),
+        )
+        check_error(err, "SendCommand(Release Up)")
+        time.sleep(1.0)
+
+        # Release S1 half-press
+        self.set_property(PropertyCode.S1, int(LockIndicator.Unlocked))
 
     def start_movie(self) -> None:
         """Start movie recording."""
