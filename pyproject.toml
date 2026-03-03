@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "sonyalphapy"
+version = "0.1.0"
+description = "Python bindings for the Sony Camera Remote SDK v1"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["sony", "alpha", "camera", "remote", "sdk", "ctypes"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Multimedia :: Graphics :: Capture",
+]
+
+# No runtime dependencies — stdlib only.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sonyalphapy*"]
+
+[tool.setuptools.package-data]
+"*" = ["CrSDK_v1/external/crsdk/*.dylib",
+       "CrSDK_v1/external/crsdk/CrAdapter/*.dylib"]
